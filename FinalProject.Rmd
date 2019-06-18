@@ -1,0 +1,354 @@
+---
+title: "KDD_CUP_2009_FINAL_PROJECT"
+author: "Liping Yao, Jatin Gongiwala, Xia Liu, Kamrun Sumi, Xiaoxu Zhang"
+date: "12/4/2018"
+output: html_document
+---
+
+KDD CUP 2009:
+The KDD Cup 2009 offers the opportunity to work on large marketing databases from the French Telecom company Orange to predict the propensity of customers to switch provider (churn), buy new products or services (appetency), or buy upgrades or add-ons proposed to them to make the sale more profitable (up-selling). Among them, here we are going to handle only churn in this section as a target feature. 
+
+##The Goal:
+The goal is twofold (a) data cleaning and (b) reduce prediction error rate by using different models.
+
+###DATA CLEANING:
+
+Step-1. Data importation
+```{r}
+# You need to change it to a relevant folder on your computer containing the Orange data
+#setwd("/Users/manha/Desktop/final project/orange")
+# Set randomizer's seed
+set.seed(1) 
+# Common missing data (NA-Not available) data format:
+na_strings <- c(
+  '',
+  'na', 'n.a', 'n.a.',
+  'nan', 'n.a.n', 'n.a.n.',
+  'NA', 'N.A', 'N.A.',
+  'NaN', 'N.a.N', 'N.a.N.',
+  'NAN', 'N.A.N', 'N.A.N.',
+  'nil', 'Nil', 'NIL',
+  'null', 'Null', 'NULL')
+#Import data
+churn.train<-read.table('orange_small_train.data',sep='\t',header=TRUE,stringsAsFactors=TRUE, na.strings=na_strings)
+churn <- read.table("orange_small_train_churn.labels.txt", header = F, sep = '\t') # Response data set
+churn.train$churn <- ifelse(churn$V1 == 1, 1, 0)  # Transform target data into binary variabel
+
+
+```
+
+The KDD Cup data set consists of 50,000 samples and 230 anonnymous features that can be used to predict the outcome of interest churn.
+
+Step-2. Let's split the data into a training and test data set based on the quantile: 
+
+
+```{r}
+
+set.seed(2018)
+n<-nrow(churn.train)
+test<-rnorm(n)>quantile(rnorm(n),0.6) 
+train<-churn.train[!test,]
+test<-churn.train[test,]
+all<-rbind(train,test) ## combine both test and train data. we will use it in the future
+INR <- 1:29955 # The elements in the rows from 1 to 29955 consist of training data
+INS <- 29956:50000 # The elements in the rows from 29956 to 50000 consist of test data
+
+```
+
+We got total 29,955 training observations and 20,046 test observations.
+
+Step-3.Check missing value in our data set and plot the histogram.
+
+```{r}
+res<-sapply(all,function(x) sum(is.na(x))) # Check the total no of missing data in all the data set
+missing<-sort(res,decreasing = TRUE) # sort data in descending order
+hist(missing, col= "red", xlab ="No of missing data", ylab = "No of variable with missing data", main="Histogram of missing data" )
+
+```
+ 
+From the histrogram shown above, we can see that there are a larger amount of missing data. There are approximately 157 variables which have 90k to 100k data missing.However, there are a small handful of variables that have around 20,000 missing data. Since missing data are randomly distributed at different rows for each feature, we can not just delete the entire row because we may delete some good data in this case.Therefore, let's not mess with them. In summary, instead of removing data in any row, we will remove all features (columns) that have over 20000 missing data. 
+
+Step-4: Getting Rid of variable which has too Many Missing Values:
+
+```{r}
+#missing[missing>0]
+#summary(all[,names(missing)[missing>0]])
+drop<-names(all)%in%names(missing[missing>20000]) # Find the features which has more than 20k missing values
+D<-all[!drop] # Keep the data which has less than 20k missing values
+res<-sapply(D,function(x) sum(is.na(x)))  # Find out total missing values in the current data set
+#str(D)
+data.type<-sapply(D, class) # Find the class of the existing data set
+table(data.type)
+```
+
+Now, we have 68 explanatory variables left. From them, 28 are factorials, 35 are integers, and rest of them are (5) numeric.
+
+STEP-4: Change integer and numarical variables with fewer than 10 unique values to factor variables:
+
+```{r}
+classD<-factor(sapply(D, class))
+numvar<-names(D)[data.type != 'factor'] # Find the variables which are not factorial, i.e. numerical
+numvar
+pdf("hist_numeric_vars.pdf")
+for (var_name in numvar){
+  hist(D[,var_name], xlab = var_name, main="Histogram of sample data")
+}
+dev.off()
+(a <- sapply(D[,numvar], function(x){length(unique(x))})) # Find the max no of unique no in each numerical variables
+(integer_to_factor_vars <- names(a[which(a<=10)])) #Find out the numerical variables which have less than unique no
+D[,integer_to_factor_vars] <- data.frame(apply(D[,integer_to_factor_vars], 2, as.factor)) # Convert numerical variables into factorial which have less than 10 unique values
+sapply(D[,numvar], class)
+data.type<-sapply(D, class)
+table(data.type)
+
+```
+
+
+Now, we have 34 Factorial variables, 30 integer variables and 4 numeric variables.
+
+Step-5: Clean Categorical Variables
+
+Below are categorical features and their number of categories:
+
+
+```{r}
+#catergorical missing value
+factor_var<- names(D)[classD == 'factor'] # Find out the categorical variable names only from the existing data set
+(factor_levels <- sapply(D[,factor_var], nlevels)) # Find out how many levels exist in each factorial variables
+```
+
+Those variables having over 500 categories or levels are likely to be just text / character data. Let’s get rid of them:
+
+```{r}
+##drop the factorial variable with more than 500 levels
+large_level_val<-names(D)%in%names(factor_levels[factor_levels>500]) #Find out the factorial variables which have more than 500 categories or levels
+D<-D[!large_level_val] # Keep the categorical variables which have less than 500 levels
+
+classD<-factor(sapply(D, class))
+factor_var<- names(D)[classD== 'factor'] #Find the factorial variable names
+
+```
+
+Step-6: Lets write a mode function. we use mode function to find the highest no of occurrences in the variable. We will use this mode function in the future. 
+
+```{r}
+moDe <- function(x){
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+ 
+M.NA <- matrix(NA, nrow=ncol(D), ncol=2)# Create an empty matrix with elements of NA. Matrix row no is equivalent to the no of clomuns in D data set and no of columns are 2. The dimension of the matrix is 61x2
+rownames(M.NA) <- 1:ncol(D) # rownames is equivalent to the no of columns or variables in the existing D data set.The existing data set D has 61 variables
+colnames(M.NA) <- c("train","test") # Only two columns: one is train and other one is test
+```
+
+Step-7: For categorical variable, replace missing values with mode where mode means the most frequent element in that variable. For non categorical variable, replace missing values with median
+ 
+```{r}
+
+for (i in 1:ncol(D)){
+  rownames(M.NA)[i] <- colnames(D)[i] # Assign each variable to rownames
+  M.NA[i,1] <- sum(is.na(D[INR,i])) # Find the total no of missing value for each variable where the row starts from 1 to 29955. These are training data
+  M.NA[i,2] <- sum(is.na(D[INS,i])) # Find the total no of missing value for each variable where the row starts from 29956 to 50000. These are test data
+}
+#### Impute mode(factor) for NA, when NA only appear in test set:
+for (i in 1:(ncol(D)-1)){
+  if ((M.NA[i,1]==0)&(M.NA[i,2]>0)){
+    IND <- rownames(M.NA)[i] # Find the specific variable location no. For first variable in D data set it is 1.
+    if(is.factor(D[,i])){  #if variable in D is factorial, find the most frequent elements and replace NA with that most frequent element
+      D[is.na(D[,IND]),IND] <- moDe(D[,IND]) # impute mode (factor)
+    } else { # If the variable in D is not factorial, i.e. numerical and integers, find the median and replace NA with median data
+      D[is.na(D[,IND]),IND] <- median(D[,IND],na.rm=T) # impute median (numeric)
+    }
+  }
+}
+rm(M.NA) # Remove M.NA 
+
+```
+
+Step-8: Define a function which can count no of NA values
+
+
+
+```{r}
+isna <- function(d){sum(is.na(d))} # count NA values
+INDna <- apply(D, 2, isna)
+```
+
+ Step-8: If numeric, substitute 0 to NAs and make a dummy variable.
+ If factorial, substitute "NAd" to NAs.
+
+```{r}
+for (i in 1:59){
+  if (INDna[i]>0){
+    if (is.numeric(D[,i])){  # Is it numerical data?
+      D$X <- is.na(D[,i]) + 0 # Add 0 instead of NA
+      D[is.na(D[,i]),i] <- median(D[,i],na.rm=T) # plug in median for NAs
+      names(D)[ which( names(D)=="X" ) ] <- paste(colnames(D)[i],"NA",sep="")
+    }
+    if (is.factor(D[,i])){  #Is it factorial data?
+      D[,i] <- as.character(D[,i])
+      D[is.na(D[,i]),i] <- "NAd" # plug in "NAd" for NAs
+      D[,i] <- as.factor(D[,i])
+    }
+  }
+}
+rm(INDna)
+#D
+```
+
+##PART-2:MODEL SELECTION:
+
+Step-1:Loading library for models
+
+```{r}
+library(cvTools) # for cvFolds
+library(tree) #  for regression tree ("tree")
+library(randomForest) # for random forest 1
+library(caret)
+
+```
+
+Read variable as numeric
+
+```{r}
+D$Var192 <- as.numeric(D$Var192)
+D$Var193 <- as.numeric(D$Var193)
+D$Var197 <- as.numeric(D$Var197)
+D$Var204 <- as.numeric(D$Var204)
+D$Var212 <- as.numeric(D$Var212)
+```
+
+
+#####Implement Random Forest:
+Random forests or random decision forests are an ensemble learning method for classification, regression and other tasks that operates by constructing a multitude of decision trees at training time and outputting the class that is the mode of the classes or mean prediction of the individual trees
+
+
+```{r}
+
+set.seed(1234)
+##test for a smaller sample
+train<-D[1:5000,]
+test <- D[29955:34868,]
+test$churn<-NA
+rf1<-randomForest(as.factor(churn)~.,
+                  data=train,
+                  importance=TRUE,
+                  ntree=30)
+rf1
+```
+
+We can observe that the model is predicting the 0's but not the 1's. This is because the data is skewed. The number of 0's in the data is more than 1's.
+
+```{r}
+varImpPlot(rf1)
+```
+
+The obove graph displays the mean decrease accuracy. It shows how removing one variable affects the overall model accuracy
+
+Lets run the model on test data
+
+```{r}
+
+Prediction <- predict(rf1, test)
+submit <- data.frame(ID=29955:34868, churn = Prediction)
+```
+
+We get an accuracy rate of 92.46%
+
+There are two methods to overcome the skewed data, oversampling and undersampling.
+
+#Oversampling
+Load library rose 
+
+```{r}
+library(ROSE)
+over<-ovun.sample(as.factor(churn)~.,data=train,method="over",N=9280)$data
+table(over$churn)
+```
+
+We can see that now due to oversampling we have an equal representation of 0's and 1's
+
+```{r}
+rf2<-randomForest(as.factor(churn)~.,data=over,importance=TRUE,ntree=30)
+rf2
+```
+
+For the training set, we got an error rate of 0.02%
+
+```{r}
+#Prediction2<-predict(rf2,test)
+#confusionMatrix(Prediction2,test$churn)
+```
+
+For the test set, we got 92.36% accuracy
+
+#####logistic regression
+The glm() function is a genaralized linear model that includes logistic regression. The syntex of the glm() function is similar to lm(), except that we must pass in the argument family=binomial.
+
+```{r}
+#LR1 <- glm(churn~.,D[INR,],family=binomial(link = "logit"))
+#summary(LR1)
+#step(LR1) # stepwise selection by AIC
+
+```
+
+Since logistic regression takes longer time, lets try Lasso instead.
+
+
+#####Lasso:
+In statistics and machine learning, lasso (least absolute shrinkage and selection operator; also Lasso or LASSO) is a regression analysis method that performs both variable selection and regularization in order to enhance the prediction accuracy and interpretability of the statistical model it produces.
+
+
+```{r}
+library(glmnet)
+x=model.matrix(churn~.,D)[,-1]
+y=D$churn
+train=sample(1:nrow(x),nrow(x)/2)
+grid=10^seq(10,-2,length=100)
+lasso.mod=glmnet(x[train,],y[train],alpha=1,lambda=grid,family="binomial")
+
+```
+
+here we have chosen to implement the function over a grid of values ranging from λ = 1010 to λ = 10−2,from lamda is equal to ten to the power of ten to ten to the power of minus two, essentially covering the full range of scenarios from the null model containing only the intercept, to the least squares fit.
+
+```{r}
+plot(lasso.mod)
+```
+
+The figure above shows the coefficients vs L1 norm in the lasso model. The L1 norm is defined as the summation of the absolute value of the coefficients. When L1 norm is zero, the penalty term which consists of lambda and beta shrinks its coefficients (beta) to zero (where Lambda=Infinity). At this point, the penalty term  has the least contribution to the Lasso model. In other words, when L1 norm is zero, the model accuracy is the highest. As the L1 norm increases, the magnitude of coefficients increase and thus the penalty term adds error to the lasso model. The advantage of Lasso model over ridge regression is that Lasso model makes its coefficients to be exactly zero where ridge regression model makes its coefficients to be close to zero but never exactly zero. 
+
+As shown above, the variables with black and light blue lines starts immediately followed by another variable with blue line. Most of other lines start when L1 norm is more than 1.0 which means these variables have less contribution to the penalty term.
+
+In summary, excluding black, light blue, and blue lines, rest of the variables have zero coefficients and hence are considered to be better variables. This is one way, we can select our parameters of interests.
+
+
+
+Here we see that 7 coefficient estimates are not zero. So，the lasso model with λ chosen by cross-validation contains only seven variables.
+
+```{r}
+set.seed(1)
+cv.out=cv.glmnet(x[train,],y[train],alpha=1,family="binomial")
+bestlam=cv.out$lambda.min
+test=(-train)
+y.test=y[test]
+lasso.pred=predict(lasso.mod,s=bestlam,newx = x[test,],family="binomial")
+out=glmnet(x,y,alpha = 1,lambda=grid,family="binomial")
+lasso.coef=predict(out,type="coefficients",s=bestlam)
+#lasso.coef
+
+LR2 <- glm(churn~Var73+Var113+Var126+Var205+Var210+Var218+Var126NA, 
+           D[INR,],
+           family=binomial(link = "logit"))
+
+Prob <- predict(LR2, D[INS,], type="response") # fitted probability of churn
+Pred <- (Prob > 0.5) + 0 # predicted churn (0/1)
+#Pred
+table(Pred, D[INS,"churn"]) 
+
+
+```
+
+We got an error rate around 7%.
+
+Conclusion:We have tried two different modeling methods , random forest and lasso. Both of them have an error rate of around 7%
